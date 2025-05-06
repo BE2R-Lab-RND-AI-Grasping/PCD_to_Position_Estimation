@@ -1,9 +1,11 @@
 import torch
 import numpy as np
 import open3d as o3d
-import random 
+import random
 import json
 from copy import deepcopy
+from torch.utils.data import Dataset
+
 
 class FullPCDDataCreator:
     def __init__(self):
@@ -40,32 +42,33 @@ class FullPCDDataCreator:
         #     [    2*(q2*q3 + q1*q4), 1 - 2*(q2**2 + q4**2),     2*(q3*q4 - q1*q2)],
         #     [    2*(q2*q4 - q1*q3),     2*(q3*q4 + q1*q2), 1 - 2*(q2**2 + q3**2)]
         # ])
-        
+
         # random translation in z direction
         z = z_min + random.random()*(z_max-z_min)
-        
-        r = (z*np.tan(np.pi/3) - indent) * random.random
+
+        r = (z*np.tan(np.pi/3) - indent) * random.random()
         angle = random.random()*2*np.pi
         x = r*np.cos(angle)
         y = r*np.sin(angle)
 
         T = np.array([
-            [1 - 2*(q3**2 + q4**2),     2*(q2*q3 - q1*q4),     2*(q2*q4 + q1*q3), x],
-            [    2*(q2*q3 + q1*q4), 1 - 2*(q2**2 + q4**2),     2*(q3*q4 - q1*q2), y],
-            [    2*(q2*q4 - q1*q3),     2*(q3*q4 + q1*q2), 1 - 2*(q2**2 + q3**2), z],
-            [0,0,0,1]
+            [1 - 2*(q3**2 + q4**2),     2*(q2*q3 - q1*q4),
+             2*(q2*q4 + q1*q3), x],
+            [2*(q2*q3 + q1*q4), 1 - 2*(q2**2 + q4**2),     2*(q3*q4 - q1*q2), y],
+            [2*(q2*q4 - q1*q3),     2*(q3*q4 + q1*q2), 1 - 2*(q2**2 + q3**2), z],
+            [0, 0, 0, 1]
         ])
         return T
-    
-    def generate_pcd(self, model:o3d.geometry.TriangleMesh, transformation):
+
+    def generate_pcd(self, model: o3d.geometry.TriangleMesh, transformation):
         model = deepcopy(model)
         model.transform(transformation)
         return model.sample_points_poisson_disk(self.n_points)
 
-    def generate_data(self, model_paths, labels, n_samples = 10000):
+    def generate_data(self, model_paths, labels, n_samples=10000):
         models = [o3d.io.read_triangle_mesh(path) for path in model_paths]
         model_idxs = list(range(len(models)))
-        label_dict = {i:labels[i] for i in range(len(models))}
+        label_dict = {i: labels[i] for i in range(len(models))}
         position_list = []
         pcd_list = []
         idx_list = []
@@ -76,11 +79,38 @@ class FullPCDDataCreator:
             idx_list.append(idx)
             model = models[idx]
             pcd = self.generate_pcd(model, transformation)
-            pcd_list.append(pcd)
-            
+            pcd_list.append(np.asarray(pcd.points))
+
         self.pcd_array = np.array(pcd_list)
         self.position_array = np.array(position_list)
         self.class_array = np.array(idx_list)
-        np.savez(f"full_pcd_{n_samples}_samples.npz", pcds=self.pcd_array, transformations = self.position_array,classes = self.class_array)
+        np.savez(f"full_pcd_{n_samples}_samples.npz", pcds=self.pcd_array,
+                 transformations=self.position_array, classes=self.class_array)
         with open("label_dict.json", "w") as f:
-            json.dump(label_dict,f)
+            json.dump(label_dict, f)
+
+
+class FullPCDDataset(Dataset):
+    def __init__(self, npz_path, transform=None):
+        data = np.load(npz_path)
+        self.point_clouds = data['pcds']  # adjust key names as needed
+        self.labels = data['classes']
+        self.positions = data['transformations']
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.point_clouds)
+
+    def __getitem__(self, idx):
+        point_cloud = self.point_clouds[idx]
+        label = self.labels[idx]
+        position = self.positions[idx]
+
+        # Convert to tensors
+        point_cloud = torch.from_numpy(point_cloud).float()
+        label = torch.tensor(label, dtype=torch.long)
+        position = torch.from_numpy(position).float()
+
+        if self.transform:
+            point_cloud = self.transform(point_cloud)
+        return point_cloud, (label, position)
