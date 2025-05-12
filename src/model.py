@@ -1,4 +1,4 @@
-
+"""Model that predicts object class and position using the point cloud"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,8 +6,11 @@ from src.model_utils import sample_and_group
 
 
 class PointNetSetAbstraction(nn.Module):
+    """Main module of the PointNet++ that groups points and extract features for each group"""
+
     def __init__(self, npoint, radius, nsample, in_channels, mlp_channels, group_all):
-        """
+        """Network initialization and parameter setting.
+
         Args:
             npoint (int): number of sampled points
             radius (float): ball query radius
@@ -31,42 +34,47 @@ class PointNetSetAbstraction(nn.Module):
             last_channel = out_channel
 
     def forward(self, xyz, points):
-        """
-        Args:
-            xyz: (B, N, 3)
-            points: (B, N, C) or None
+        """Forward network propagation.
+
+        Args:group_all=True
+            xyz (torch.Tensor(Bgroup_all=True, N, 3)): point coordinates
+            points Optional[torch.Tensor(B, N, C)]: point features
 
         Returns:
-            new_xyz: (B, npoint, 3)
-            new_points: (B, npoint, mlp[-1])
+            torch.Tensor(B, npoint, 3): new point cloud
+            torch.Tensor(B, npoint, mlp[-1]): new point features
         """
-        if self.group_all:
-            new_xyz = torch.zeros(xyz.shape[0], 1, 3).to(xyz.device)# just zeroes it is not supposed to be used
-            # grouped_xyz_norm = grouped_xyz - new_xyz.unsqueeze(2)
+
+        # group all is true if there is only one group
+        if self.group_all:group_all=True
+            # simple replacement for sample_and_group if there is only one group
+            # just zeroes it is not supposed to be used
+            new_xyz = torch.zeros(xyz.shape[0], 1, 3).to(xyz.device)
             grouped_xyz = xyz.view(xyz.shape[0], 1, xyz.shape[1], 3)
-            mean_xyz = torch.mean(grouped_xyz, dim=-1, keepdim=True)  # (B, 1, N, 3)
+            mean_xyz = torch.mean(grouped_xyz, dim=-1,
+                                  keepdim=True)  # (B, 1, N, 3)
             grouped_xyz_norm = grouped_xyz - mean_xyz  # center at mean value
             if points is not None:
-                grouped_points = points.view(points.shape[0], 1, points.shape[1], -1)
-                new_points = torch.cat([grouped_xyz, grouped_xyz_norm, grouped_points], dim=-1)
+                grouped_points = points.view(
+                    points.shape[0], 1, points.shape[1], -1)
+                new_points = torch.cat(
+                    [grouped_xyz, grouped_xyz_norm, grouped_points], dim=-1)
             else:
                 new_points = torch.cat([grouped_xyz, grouped_xyz_norm], dim=-1)
         else:
             # new_xyz are only sampled points (B, npoint, 3)
             # new points are grouped into (B, npoint, nsample, C+6) and have all the points and their coordinates
-            new_xyz, new_points = sample_and_group(self.npoint, self.radius, self.nsample, xyz, points)
+            new_xyz, new_points = sample_and_group(
+                self.npoint, self.radius, self.nsample, xyz, points)
 
         # Transpose to (B, C, npoint, nsample) for Conv2d
         # only new_points are to be pocessed by the MLP
         new_points = new_points.permute(0, 3, 1, 2)
-
-        # GPT generated way for MLP
+        # use 2D convolution to apply same FCL for all points at once
         for conv, bn in zip(self.mlp_convs, self.mlp_bns):
-            new_points = F.relu(bn(conv(new_points)))
-
+            new_points = F.leaky_relu(bn(conv(new_points)))
         # Pool across neighbors (nsample)
         new_points = torch.max(new_points, 3)[0]  # (B, mlp[-1], npoint)
-
         # Transpose back to (B, npoint, mlp[-1])
         new_points = new_points.permute(0, 2, 1)
 
@@ -74,9 +82,15 @@ class PointNetSetAbstraction(nn.Module):
 
 
 class PointNetPPBackbone(nn.Module):
-    def __init__(self):
-        super().__init__()
+    """PontNet++ module for point cloud feature extraction.
+    """
 
+    def __init__(self):
+        """Initialize several consecutive PointNetSetAbstraction layers for hierarchical feature extraction.
+
+        The last layer should have group_all=True to return the global features of the remaining point cloud.
+        """
+        super().__init__()
         self.sa1 = PointNetSetAbstraction(
             npoint=512, radius=0.2, nsample=32,
             in_channels=0,
@@ -115,11 +129,16 @@ class PointNetPPBackbone(nn.Module):
         global_feature = l3_features.squeeze(1)  # (B, 1024)
 
         return global_feature
-    
+
 
 class PoseWithClassModel(nn.Module):
+    """Model for point cloud classification and position prediction."""
     def __init__(self, num_classes):
+        """Initialize PointNet++ backbone and two heads. 
 
+        Args:
+            num_classes (int): number of possible classes
+        """
         super().__init__()
         self.backbone = PointNetPPBackbone()
 
@@ -135,12 +154,19 @@ class PoseWithClassModel(nn.Module):
             nn.Linear(512, 7)  # x, y, z, qx, qy, qz, qw
         )
 
+        # Learnable log variances for each task
+        self.log_var_cls = nn.Parameter(torch.zeros(1))  # Classification
+        self.log_var_pos = nn.Parameter(torch.zeros(1))  # Position
+        self.log_var_ori = nn.Parameter(torch.zeros(1))  # Orientation
+
+
     def forward(self, xyz):
         global_feature = self.backbone(xyz)           # (B, 1024)
         class_logits = self.class_head(global_feature)  # (B, num_classes)
         class_probs = F.softmax(class_logits, dim=1)
 
-        combined = torch.cat([global_feature, class_logits], dim=1)  # (B, 1024 + C)
+        combined = torch.cat(
+            [global_feature, class_logits], dim=1)  # (B, 1024 + C)
         pose = self.pose_head(combined)  # (B, 7)
 
         return class_logits, pose
