@@ -11,6 +11,8 @@ class FullPCDDataCreator:
     def __init__(self):
         # arrays to store data
         self.pcd_array = None
+        self.transformation_array = None
+        self.quaternion_array = None
         self.position_array = None
         self.class_array = None
         # generation parameters
@@ -46,7 +48,7 @@ class FullPCDDataCreator:
         # random translation in z direction
         z = z_min + random.random()*(z_max-z_min)
 
-        r = (z*np.tan(np.pi/3) - indent) * random.random()
+        r = (z*np.tan(np.pi/4) - indent) * random.random()
         angle = random.random()*2*np.pi
         x = r*np.cos(angle)
         y = r*np.sin(angle)
@@ -58,7 +60,7 @@ class FullPCDDataCreator:
             [2*(q2*q4 - q1*q3),     2*(q3*q4 + q1*q2), 1 - 2*(q2**2 + q3**2), z],
             [0, 0, 0, 1]
         ])
-        return T
+        return T, np.array([q1, q2, q3, q4]), np.array([x, y, z])
 
     def generate_pcd(self, model: o3d.geometry.TriangleMesh, transformation):
         model = deepcopy(model)
@@ -69,12 +71,18 @@ class FullPCDDataCreator:
         models = [o3d.io.read_triangle_mesh(path) for path in model_paths]
         model_idxs = list(range(len(models)))
         label_dict = {i: labels[i] for i in range(len(models))}
+        transformation_list = []
+        quaternion_list = []
         position_list = []
         pcd_list = []
         idx_list = []
         for i in range(n_samples):
-            transformation = self.generate_random_transformation()
-            position_list.append(transformation)
+            if i % 1000 == 0:
+                print(f"Generating sample {i}/{n_samples}")
+            transformation, quaternion, position = self.generate_random_transformation()
+            position_list.append(position)
+            quaternion_list.append(quaternion)
+            transformation_list.append(transformation)
             idx = random.choice(model_idxs)
             idx_list.append(idx)
             model = models[idx]
@@ -82,10 +90,12 @@ class FullPCDDataCreator:
             pcd_list.append(np.asarray(pcd.points))
 
         self.pcd_array = np.array(pcd_list)
+        self.transformation_array = np.array(transformation_list)
+        self.quaternion_array = np.array(quaternion_list)
         self.position_array = np.array(position_list)
         self.class_array = np.array(idx_list)
         np.savez(f"full_pcd_{n_samples}_samples.npz", pcds=self.pcd_array,
-                 transformations=self.position_array, classes=self.class_array)
+                 transformations=self.position_array, quaternions=self.quaternion_array, positions=self.position_array ,classes=self.class_array)
         with open("label_dict.json", "w") as f:
             json.dump(label_dict, f)
 
@@ -95,7 +105,9 @@ class FullPCDDataset(Dataset):
         data = np.load(npz_path)
         self.point_clouds = data['pcds']  # adjust key names as needed
         self.labels = data['classes']
-        self.positions = data['transformations']
+        self.positions = data['positions']
+        self.transformations = data['transformations']
+        self.quaternions = data['quaternions']
         self.transform = transform
 
     def __len__(self):
@@ -104,13 +116,15 @@ class FullPCDDataset(Dataset):
     def __getitem__(self, idx):
         point_cloud = self.point_clouds[idx]
         label = self.labels[idx]
+        quaternion = self.quaternions[idx]
         position = self.positions[idx]
 
         # Convert to tensors
         point_cloud = torch.from_numpy(point_cloud).float()
         label = torch.tensor(label, dtype=torch.long)
         position = torch.from_numpy(position).float()
-
+        quaternion = torch.from_numpy(quaternion).float()
         if self.transform:
             point_cloud = self.transform(point_cloud)
-        return point_cloud, (label, position)
+
+        return point_cloud, (label, quaternion, position)
