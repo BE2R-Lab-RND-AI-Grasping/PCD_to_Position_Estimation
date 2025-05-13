@@ -2,7 +2,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-
+import datetime
+from tqdm import tqdm
 
 # --- Loss for quaternion ---
 def quaternion_loss(pred_q, gt_q):
@@ -22,7 +23,7 @@ def validate_model(model, val_loader, device, alpha=1.0, beta=1.0):
     total = 0
 
     with torch.no_grad():
-        for batch in val_loader:
+        for batch in tqdm(val_loader, desc="Validating"):
             point_clouds = batch[0].to(device)            # (B, N, 3)
             class_labels = batch[1][0].to(device)       # (B,)
             gt_translation = batch[1][2].to(device)     # (B, 3)
@@ -73,11 +74,15 @@ def validate_model(model, val_loader, device, alpha=1.0, beta=1.0):
           f"Accuracy: {accuracy:.2f}%")
 
     return avg_loss, total_cls_loss / len(val_loader), total_pose_loss / len(val_loader), accuracy
+
+
 # --- Training function ---
+def save_checkpoint(state, filename="checkpoint.pth"):
+    torch.save(state, filename)
 
 
-def train_model(model, train_loader, val_loader, optimizer, device, epochs=100, alpha=1.0, beta=1.0):
-    writer = SummaryWriter(log_dir="runs/pose_classification")
+def train_model(model, train_loader, val_loader, optimizer, scheduler=None, device=torch.device("cpu"), epochs=100, alpha=1.0, beta=1.0):
+    writer = SummaryWriter()
     best_val_loss = float('inf')
     model.to(device)
 
@@ -86,8 +91,11 @@ def train_model(model, train_loader, val_loader, optimizer, device, epochs=100, 
         total_loss = 0.0
         total_cls_loss = 0.0
         total_pose_loss = 0.0
-
-        for batch in train_loader:
+        # print(torch.cuda.get_device_name(0), device)
+        for batch in tqdm(train_loader, desc="Training"):
+            # start = torch.cuda.Event(enable_timing=True)
+            # end = torch.cuda.Event(enable_timing=True)
+            # start.record()
             point_clouds = batch[0].to(device)            # (B, N, 3)
             class_labels = batch[1][0].to(device)       # (B,)
             gt_translation = batch[1][2].to(device)     # (B, 3)
@@ -96,7 +104,8 @@ def train_model(model, train_loader, val_loader, optimizer, device, epochs=100, 
             optimizer.zero_grad()
 
             class_logits, pred_pose = model(point_clouds)
-
+            # print(f"Input device: {point_clouds.device}")
+            # print(f"Model device: {next(model.parameters()).device}")
             pred_translation = pred_pose[:, :3]
             pred_quaternion = pred_pose[:, 3:]
 
@@ -117,15 +126,18 @@ def train_model(model, train_loader, val_loader, optimizer, device, epochs=100, 
             )
             # pose_loss = trans_loss + beta * rot_loss
             # loss = cls_loss + alpha * pose_loss
-
             loss.backward()
             optimizer.step()
+            # end.record()
+            # torch.cuda.synchronize()
+            # print(f"GPU time: {start.elapsed_time(end)} ms")
             # total_loss += loss.item()
             # total_cls_loss += cls_loss.item()
             # total_pose_loss += pose_loss.item()
             total_loss += loss.item()
             total_cls_loss += (var_cls * cls_loss).item()
             total_pose_loss += (var_pos * trans_loss + var_ori * rot_loss).item()
+
 
         print(f"Epoch {epoch+1}/{epochs} - "
               f"Total Loss: {total_loss:.4f} - "
@@ -149,3 +161,12 @@ def train_model(model, train_loader, val_loader, optimizer, device, epochs=100, 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), "best_model.pth")
+
+        if (epoch+1) % 10 == 0:
+            save_checkpoint({
+                'epoch': epoch,
+                'model_state': model.state_dict(),
+                'optimizer_state': optimizer.state_dict(),
+                'scheduler_state': scheduler.state_dict(),
+                'best_val_loss': best_val_loss,
+            }, filename=f'checkpoint_epoch_{epoch}.pth')

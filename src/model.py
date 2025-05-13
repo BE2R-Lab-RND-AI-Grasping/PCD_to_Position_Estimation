@@ -26,11 +26,14 @@ class PointNetSetAbstraction(nn.Module):
         self.group_all = group_all
 
         last_channel = in_channels + 6  # +6 for absolute and relative xyz
-        self.mlp_convs = nn.ModuleList()
-        self.mlp_bns = nn.ModuleList()
-        for out_channel in mlp_channels:
-            self.mlp_convs.append(nn.Conv2d(last_channel, out_channel, 1))
-            self.mlp_bns.append(nn.BatchNorm2d(out_channel))
+        self.mlp = nn.ModuleList()
+        for i, out_channel in enumerate(mlp_channels):
+            self.mlp.append(nn.Conv2d(last_channel, out_channel, 1))
+            
+            if i != 0:
+                self.mlp.append(nn.BatchNorm2d(out_channel))
+
+            self.mlp.append(nn.LeakyReLU(inplace=True))
             last_channel = out_channel
 
     def forward(self, xyz, points):
@@ -46,7 +49,7 @@ class PointNetSetAbstraction(nn.Module):
         """
 
         # group all is true if there is only one group
-        if self.group_all:group_all=True
+        if self.group_all:
             # simple replacement for sample_and_group if there is only one group
             # just zeroes it is not supposed to be used
             new_xyz = torch.zeros(xyz.shape[0], 1, 3).to(xyz.device)
@@ -71,8 +74,16 @@ class PointNetSetAbstraction(nn.Module):
         # only new_points are to be pocessed by the MLP
         new_points = new_points.permute(0, 3, 1, 2)
         # use 2D convolution to apply same FCL for all points at once
-        for conv, bn in zip(self.mlp_convs, self.mlp_bns):
-            new_points = F.leaky_relu(bn(conv(new_points)))
+
+        for layer in self.mlp:
+            new_points = layer(new_points)
+
+        # for conv, bn in zip(self.mlp_convs, self.mlp_bns):
+        #     if layer == 0:
+        #         # first layer skip batch norm for keeping absolute coordinates information
+        #         new_points = F.leaky_relu(conv(new_points))
+        #     new_points = F.leaky_relu(bn(conv(new_points)))
+
         # Pool across neighbors (nsample)
         new_points = torch.max(new_points, 3)[0]  # (B, mlp[-1], npoint)
         # Transpose back to (B, npoint, mlp[-1])
@@ -99,7 +110,7 @@ class PointNetPPBackbone(nn.Module):
         )
 
         self.sa2 = PointNetSetAbstraction(
-            npoint=128, radius=0.4, nsample=32,
+            npoint=128, radius=0.3, nsample=16,
             in_channels=128,  # last feature + new xyz absolute and relative
             mlp_channels=[128, 128, 256],
             group_all=False
