@@ -57,6 +57,22 @@ def square_distance(src, dst):
     dist += torch.sum(src ** 2, -1).unsqueeze(1)         # (B, 1, N)
     return dist
 
+def knn_point(k, xyz, new_xyz):
+    """
+    Input:
+        k: int
+        xyz: (B, N, 3) - full point cloud
+        new_xyz: (B, npoint, 3) - query points
+    Return:
+        group_idx: (B, npoint, k) - indices of k nearest neighbors
+    """
+    # Compute squared distances between new_xyz and xyz
+    dist = square_distance(xyz, new_xyz)  # (B, npoint, N)
+
+    # Get indices of k smallest distances
+    _, group_idx = torch.topk(dist, k=k, dim=-1, largest=False, sorted=False)  # (B, npoint, k)
+    return group_idx
+
 
 def ball_query(radius, nsample, xyz, new_xyz):
     """Group local neighborhoods by radius around sampled center points.
@@ -137,6 +153,7 @@ def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
     # 2. Ball query
     # (B, npoint, nsample)
     group_idx = ball_query(radius, nsample, xyz, new_xyz)
+    # group_idx = knn_point(nsample, xyz, new_xyz)
     # (B, npoint, nsample, 3)
     grouped_xyz = index_points(xyz, group_idx)
 
@@ -150,6 +167,53 @@ def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
         new_points = torch.cat([grouped_xyz, grouped_xyz_norm, grouped_points], dim=-1)
     else:
         new_points = torch.cat([grouped_xyz, grouped_xyz_norm], dim=-1)
+
+    if returnfps:
+        return new_xyz, new_points, fps_idx
+    else:
+        return new_xyz, new_points
+    
+
+
+def sample_and_group_relative(npoint, radius, nsample, xyz, points, returnfps=False):
+    """
+    Perform sampling, grouping, and normalization.
+
+    Args:
+        npoint (int): number of sampled centers
+        radius (float): ball radius
+        nsample (int): number of neighbors per center
+        xyz (torch.Tensor(B, N, 3)): input coordinates
+        points (Optional[torch.Tensor(B, N, C)]): input features
+        returnfps (bool): whether to return FPS indices
+
+    Returns:
+        torch.Tensor(B, npoint, 3): sampled center coordinates
+        torch.Tensor (B, npoint, nsample, C+6): grouped points coordinates and features
+        (optionally) torch.Tensor(B, npoint): indices of sampled points
+    """
+    B, N, _ = xyz.shape
+    # 1. Farthest point sampling
+    fps_idx = farthest_point_sample(xyz, npoint) # (B, npoint)
+    # new point cloud built from only the sampled points
+    new_xyz = index_points(xyz, fps_idx)         # (B, npoint, 3)
+
+    # 2. KNN query
+    # (B, npoint, nsample)
+    group_idx = knn_point(nsample, xyz, new_xyz)
+    # (B, npoint, nsample, 3)
+    grouped_xyz = index_points(xyz, group_idx)
+
+    # 3. Normalize neighborhoods
+    grouped_xyz_norm = grouped_xyz - new_xyz.unsqueeze(2)  # center at origin
+
+    if points is not None:
+        grouped_points = index_points(
+            points, group_idx)   # (B, npoint, nsample, C)
+        # (B, npoint, nsample, C+3)
+        new_points = torch.cat([grouped_xyz_norm, grouped_points], dim=-1)
+    else:
+        new_points = grouped_xyz_norm
 
     if returnfps:
         return new_xyz, new_points, fps_idx

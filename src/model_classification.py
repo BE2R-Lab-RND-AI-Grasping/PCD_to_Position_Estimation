@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from src.model_utils import sample_and_group
+from src.model_utils import sample_and_group,sample_and_group_relative
 
 
 class PointNetSetAbstraction(nn.Module):
@@ -24,16 +24,14 @@ class PointNetSetAbstraction(nn.Module):
         self.radius = radius
         self.nsample = nsample
         self.group_all = group_all
-
-        last_channel = in_channels + 6  # +6 for absolute and relative xyz
+        dropout_p = 0.3
+        last_channel = in_channels + 3  # +3 for relative xyz
         self.mlp = nn.ModuleList()
         for i, out_channel in enumerate(mlp_channels):
             self.mlp.append(nn.Conv2d(last_channel, out_channel, 1))
-            
-            if i != 0:
-                self.mlp.append(nn.BatchNorm2d(out_channel))
-
-            self.mlp.append(nn.LeakyReLU(inplace=True))
+            self.mlp.append(nn.BatchNorm2d(out_channel))
+            self.mlp.append(nn.ReLU(inplace=True))
+            self.mlp.append(nn.Dropout2d(p=dropout_p))
             last_channel = out_channel
 
     def forward(self, xyz, points):
@@ -61,13 +59,13 @@ class PointNetSetAbstraction(nn.Module):
                 grouped_points = points.view(
                     points.shape[0], 1, points.shape[1], -1)
                 new_points = torch.cat(
-                    [grouped_xyz, grouped_xyz_norm, grouped_points], dim=-1)
+                    [grouped_xyz_norm, grouped_points], dim=-1)
             else:
-                new_points = torch.cat([grouped_xyz, grouped_xyz_norm], dim=-1)
+                new_points = grouped_xyz_norm
         else:
             # new_xyz are only sampled points (B, npoint, 3)
             # new points are grouped into (B, npoint, nsample, C+6) and have all the points and their coordinates
-            new_xyz, new_points = sample_and_group(
+            new_xyz, new_points = sample_and_group_relative(
                 self.npoint, self.radius, self.nsample, xyz, points)
 
         # Transpose to (B, C, npoint, nsample) for Conv2d
@@ -78,15 +76,8 @@ class PointNetSetAbstraction(nn.Module):
         for layer in self.mlp:
             new_points = layer(new_points)
 
-        # for conv, bn in zip(self.mlp_convs, self.mlp_bns):
-        #     if layer == 0:
-        #         # first layer skip batch norm for keeping absolute coordinates information
-        #         new_points = F.leaky_relu(conv(new_points))
-        #     new_points = F.leaky_relu(bn(conv(new_points)))
-
         # Pool across neighbors (nsample)
         new_points = torch.max(new_points, 3)[0]  # (B, mlp[-1], npoint)
-        # Transpose back to (B, npoint, mlp[-1])
         new_points = new_points.permute(0, 2, 1)
 
         return new_xyz, new_points
@@ -103,15 +94,15 @@ class PointNetPPBackbone(nn.Module):
         """
         super().__init__()
         self.sa1 = PointNetSetAbstraction(
-            npoint=512, radius=0.2, nsample=32,
+            npoint=256, radius=0.05, nsample=32,
             in_channels=0,
             mlp_channels=[64, 64, 128],
             group_all=False
         )
 
         self.sa2 = PointNetSetAbstraction(
-            npoint=128, radius=0.3, nsample=16,
-            in_channels=128,  # last feature + new xyz absolute and relative
+            npoint=64, radius=0.1, nsample=16,
+            in_channels=128, 
             mlp_channels=[128, 128, 256],
             group_all=False
         )
@@ -142,10 +133,10 @@ class PointNetPPBackbone(nn.Module):
         return global_feature
 
 
-class PoseWithClassModel(nn.Module):
+class ClassificationModel(nn.Module):
     """Model for point cloud classification and position prediction."""
     def __init__(self, num_classes):
-        """Initialize PointNet++ backbone and two heads. 
+        """Initialize PointNet++ backbone and classification head. 
 
         Args:
             num_classes (int): number of possible classes
@@ -153,31 +144,23 @@ class PoseWithClassModel(nn.Module):
         super().__init__()
         self.backbone = PointNetPPBackbone()
 
-        self.class_head = nn.Sequential(
-            nn.Linear(1024, 256),
+        self.classification_head = nn.Sequential(
+            nn.Linear(1024, 256),          # Input feature size = 512
+            nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Linear(256, num_classes)
-        )
+            nn.Dropout(p=0.3),
 
-        self.pose_head = nn.Sequential(
-            nn.Linear(1024 + num_classes, 512),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Linear(512, 3+6)  # x, y, z, qx, qy, qz, qw
-        )
+            nn.Dropout(p=0.3),
 
-        # Learnable log variances for each task
-        self.log_var_cls = nn.Parameter(torch.zeros(1))  # Classification
-        self.log_var_pos = nn.Parameter(torch.zeros(1))  # Position
-        self.log_var_ori = nn.Parameter(torch.zeros(1))  # Orientation
+            nn.Linear(128, num_classes)            # 10 output classes
+        )
 
 
     def forward(self, xyz):
         global_feature = self.backbone(xyz)           # (B, 1024)
-        class_logits = self.class_head(global_feature)  # (B, num_classes)
-        class_probs = F.softmax(class_logits, dim=1)
+        class_logits = self.classification_head(global_feature)  # (B, num_classes)
 
-        combined = torch.cat(
-            [global_feature, class_logits], dim=1)  # (B, 1024 + C)
-        pose = self.pose_head(combined)  # (B, 9)
-
-        return class_logits, pose
+        return class_logits
