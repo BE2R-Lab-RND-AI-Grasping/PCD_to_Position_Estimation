@@ -28,7 +28,8 @@ class PointNetSetAbstraction(nn.Module):
         self.mlp = nn.ModuleList()
         for i, out_channel in enumerate(mlp_channels):
             self.mlp.append(nn.Conv2d(last_channel, out_channel, 1))
-            self.mlp.append(nn.BatchNorm2d(out_channel))
+            if not self.group_all:
+                self.mlp.append(nn.BatchNorm2d(out_channel))
             self.mlp.append(nn.ReLU(inplace=True))
             # self.mlp.append(nn.Dropout2d(p=dropout_p))
             last_channel = out_channel
@@ -95,21 +96,21 @@ class PointNetPPBackbone(nn.Module):
         self.sa1 = PointNetSetAbstraction(
             npoint=256,  nsample=32,
             in_channels=0,
-            mlp_channels=[64, 64, 128],
+            mlp_channels=[32, 32, 64],
             group_all=False
         )
 
         self.sa2 = PointNetSetAbstraction(
             npoint=64,  nsample=16,
-            in_channels=128, 
-            mlp_channels=[128, 128, 256],
+            in_channels=64, 
+            mlp_channels=[64, 64, 128],
             group_all=False
         )
 
         self.sa3 = PointNetSetAbstraction(
             npoint=None,  nsample=None,
-            in_channels=256,
-            mlp_channels=[256, 512, 1024],
+            in_channels=128,
+            mlp_channels=[128, 256, 512],
             group_all=True
         )
 
@@ -144,17 +145,17 @@ class TranslationModel(nn.Module):
         self.backbone = PointNetPPBackbone()
 
         self.translation_head = nn.Sequential(
-            nn.Linear(1024, 256),          # Input feature size = 512
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(p=0.3),
-
-            nn.Linear(256, 128),
+            nn.Linear(512, 128),          # Input feature size = 512
             nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.Dropout(p=0.3),
 
-            nn.Linear(128, 3)            # 10 output classes
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(p=0.3),
+
+            nn.Linear(64, 3)            # 10 output classes
         )
 
 
