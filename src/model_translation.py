@@ -23,14 +23,14 @@ class PointNetSetAbstraction(nn.Module):
         self.npoint = npoint
         self.nsample = nsample
         self.group_all = group_all
-        dropout_p = 0.03
+        dropout_p = 0.3
         last_channel = in_channels + 3  # +3 for relative xyz
         self.mlp = nn.ModuleList()
         for i, out_channel in enumerate(mlp_channels):
             self.mlp.append(nn.Conv2d(last_channel, out_channel, 1))
             self.mlp.append(nn.BatchNorm2d(out_channel))
             self.mlp.append(nn.ReLU(inplace=True))
-            self.mlp.append(nn.Dropout2d(p=dropout_p))
+            # self.mlp.append(nn.Dropout2d(p=dropout_p))
             last_channel = out_channel
 
     def forward(self, xyz, points):
@@ -51,9 +51,9 @@ class PointNetSetAbstraction(nn.Module):
             # just zeroes it is not supposed to be used
             new_xyz = torch.zeros(xyz.shape[0], 1, 3).to(xyz.device)
             grouped_xyz = xyz.view(xyz.shape[0], 1, xyz.shape[1], 3)
-            mean_xyz = torch.mean(grouped_xyz, dim=-2,
-                                  keepdim=True)  # (B, 1, N, 3)
-            grouped_xyz_norm = grouped_xyz - mean_xyz  # center at mean value
+            # mean_xyz = torch.mean(grouped_xyz, dim=-2,keepdim=True)  # (B, 1, N, 3)
+            # grouped_xyz_norm = grouped_xyz - mean_xyz  # center at mean value
+            grouped_xyz_norm = grouped_xyz # no normalization to keep spacial information
             if points is not None:
                 grouped_points = points.view(
                     points.shape[0], 1, points.shape[1], -1)
@@ -100,14 +100,14 @@ class PointNetPPBackbone(nn.Module):
         )
 
         self.sa2 = PointNetSetAbstraction(
-            npoint=64, nsample=16,
+            npoint=64,  nsample=16,
             in_channels=128, 
             mlp_channels=[128, 128, 256],
             group_all=False
         )
 
         self.sa3 = PointNetSetAbstraction(
-            npoint=None, nsample=None,
+            npoint=None,  nsample=None,
             in_channels=256,
             mlp_channels=[256, 512, 1024],
             group_all=True
@@ -132,9 +132,9 @@ class PointNetPPBackbone(nn.Module):
         return global_feature
 
 
-class ClassificationModel(nn.Module):
+class TranslationModel(nn.Module):
     """Model for point cloud classification and position prediction."""
-    def __init__(self, num_classes):
+    def __init__(self):
         """Initialize PointNet++ backbone and classification head. 
 
         Args:
@@ -143,7 +143,7 @@ class ClassificationModel(nn.Module):
         super().__init__()
         self.backbone = PointNetPPBackbone()
 
-        self.classification_head = nn.Sequential(
+        self.translation_head = nn.Sequential(
             nn.Linear(1024, 256),          # Input feature size = 512
             nn.BatchNorm1d(256),
             nn.ReLU(),
@@ -154,12 +154,12 @@ class ClassificationModel(nn.Module):
             nn.ReLU(),
             nn.Dropout(p=0.3),
 
-            nn.Linear(128, num_classes)            # 10 output classes
+            nn.Linear(128, 3)            # 10 output classes
         )
 
 
     def forward(self, xyz):
         global_feature = self.backbone(xyz)           # (B, 1024)
-        class_logits = self.classification_head(global_feature)  # (B, num_classes)
+        translation = self.translation_head(global_feature)  # (B, num_classes)
 
-        return class_logits
+        return translation

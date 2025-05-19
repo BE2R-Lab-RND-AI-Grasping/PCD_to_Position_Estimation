@@ -175,13 +175,12 @@ def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
     
 
 
-def sample_and_group_relative(npoint, radius, nsample, xyz, points, returnfps=False):
+def sample_and_group_relative(npoint, nsample, xyz, points, returnfps=False):
     """
     Perform sampling, grouping, and normalization.
 
     Args:
         npoint (int): number of sampled centers
-        radius (float): ball radius
         nsample (int): number of neighbors per center
         xyz (torch.Tensor(B, N, 3)): input coordinates
         points (Optional[torch.Tensor(B, N, C)]): input features

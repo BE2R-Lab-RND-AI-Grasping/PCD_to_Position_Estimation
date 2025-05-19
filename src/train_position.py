@@ -5,63 +5,49 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import datetime
 from tqdm import tqdm
-
+from pathlib import Path
 
 def save_checkpoint(state, filename="new_run/checkpoint.pth"):
     torch.save(state, filename)
 
 def validate_model(model, val_loader, device):
     model.eval()
-
-    total_loss = 0.0    
-    correct = 0
-    total = 0
+    total_loss = 0.0
     n_samples = len(val_loader.dataset)
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="Validating"):
             batch_size = batch[0].shape[0]
-            point_clouds = batch[0].to(device)            # (B, N, 3)
-            class_labels = batch[1][0].to(device)       # (B,)
+            point_clouds = batch[0].to(device) # (B, N, 3)
+            gt_translation = batch[1][2].to(device) # (B, 3)
+            pred_translation = model(point_clouds)
+            trans_loss = F.mse_loss(pred_translation, gt_translation)
+            total_loss += trans_loss.item() * batch_size
 
-            class_logits = model(point_clouds)
-            cls_loss = F.cross_entropy(class_logits, class_labels)
-            total_loss += cls_loss.item() * batch_size
+    print(f"Validation - Loss: {total_loss/n_samples:.4f} | ")
 
-            preds = class_logits.argmax(dim=1)
-            correct += (preds == class_labels).sum().item()
-            total += class_labels.size(0)
+    return total_loss/n_samples
 
-    accuracy = correct / total * 100
 
-    print(f"Validation - Loss: {total_loss/n_samples:.4f} | "
-          f"Accuracy: {accuracy:.2f}%")
-
-    return total_loss/n_samples, accuracy
-
-from pathlib import Path
 def train_model(model, train_loader, val_loader, optimizer, scheduler=None, device=torch.device("cpu"), epochs=100, directory="new_run"):
     if not Path(directory).exists():
         Path(directory).mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter()
     best_val_loss = float('inf')
     model.to(device)
-
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
         n_samples = len(train_loader.dataset)
         for batch in tqdm(train_loader, desc="Training"):
             batch_size = batch[0].shape[0]
-
-            point_clouds = batch[0].to(device)            # (B, N, 3)
-            class_labels = batch[1][0].to(device)       # (B,)
-
+            point_clouds = batch[0].to(device) # (B, N, 3)
+            gt_translation = batch[1][2].to(device) # (B, 3)
             optimizer.zero_grad()
-            class_logits= model(point_clouds)
-            cls_loss = F.cross_entropy(class_logits, class_labels)
-            cls_loss.backward()
+            pred_translation = model(point_clouds)
+            trans_loss = F.mse_loss(pred_translation, gt_translation)
+            trans_loss.backward()
             optimizer.step()
-            total_loss += cls_loss.item() * batch_size
+            total_loss += trans_loss.item() * batch_size
 
         print(f"Epoch {epoch+1}/{epochs} - "
               f"Total Loss: {total_loss/n_samples:.4f}")
@@ -69,11 +55,10 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler=None, devi
         writer.add_scalar("Loss/Train_Total", total_loss/n_samples, epoch)
 
         # val_loss = validate_model(model, val_loader, device)
-        val_loss, val_accuracy = validate_model(
+        val_loss = validate_model(
             model, val_loader, device)
 
         writer.add_scalar("Loss/Val_Total", val_loss, epoch)
-        writer.add_scalar("Accuracy/Val", val_accuracy, epoch)
         # Optional: save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
