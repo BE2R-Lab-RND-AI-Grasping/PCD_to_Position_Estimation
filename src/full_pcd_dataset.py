@@ -6,11 +6,31 @@ import numpy as np
 import open3d as o3d
 import random
 import json
+from joblib import Parallel, delayed
 from copy import deepcopy
 from torch.utils.data import Dataset
 from scipy.spatial.transform import Rotation as R
 
+def generate_pcd(model: o3d.geometry.TriangleMesh, transformation) -> o3d.geometry.PointCloud:
+    """Generate a point cloud from a mesh after the transformation.
 
+    Args:
+        model (o3d.geometry.TriangleMesh): mesh
+        transformation (np.ndarray): transformation 4x4 matrix
+
+    Returns:
+        o3d.geometry.PointCloud: sampled point cloud
+    """
+    # start = time.perf_counter()
+    # model = deepcopy(model)
+    pcd = model.sample_points_poisson_disk(1000)
+    pcd.transform(transformation)
+    pcd = np.asarray(pcd.points)
+    # model.transform(transformation)
+    # pcd = np.asarray(model.sample_points_poisson_disk(self.n_points).points)
+    # end = time.perf_counter()
+    # print(f"Sampling took {end - start:.4f} seconds")
+    return pcd
 class FullPCDDataCreator:
     """Class to generate point clouds and store them in a dataset.
 
@@ -35,6 +55,7 @@ class FullPCDDataCreator:
         self.position_array = None
         self.class_array = None
         self.d6_rotations_array = None
+        self.models = None
         # generation parameters
         self.n_points = 1000
         self.z_min = 0.5
@@ -106,11 +127,11 @@ class FullPCDDataCreator:
         translations = np.column_stack((x, y, z))  # shape (sample_size, 3)
         transformations = np.zeros((sample_size, 4, 4))
         transformations[:, :3, :3] = random_rotations
-        transformations[:, 3, :3] = translations
+        transformations[:, :3, 3] = translations
         transformations[:, 3, 3] = 1
         return transformations, rot_6d, translations
 
-    def generate_pcd(self, model: o3d.geometry.TriangleMesh, transformation) -> o3d.geometry.PointCloud:
+    def generate_pcd(self, path, transformation) -> o3d.geometry.PointCloud:
         """Generate a point cloud from a mesh after the transformation.
 
         Args:
@@ -120,9 +141,22 @@ class FullPCDDataCreator:
         Returns:
             o3d.geometry.PointCloud: sampled point cloud
         """
-        model = deepcopy(model)
-        model.transform(transformation)
-        return model.sample_points_poisson_disk(self.n_points)
+        # start = time.perf_counter()
+        # model = deepcopy(model)
+        model = o3d.io.read_triangle_mesh(path)
+        pcd = model.sample_points_poisson_disk(self.n_points)
+        pcd.transform(transformation)
+        pcd = np.asarray(pcd.points)
+        # model.transform(transformation)
+        # pcd = np.asarray(model.sample_points_poisson_disk(self.n_points).points)
+        # end = time.perf_counter()
+        # print(f"Sampling took {end - start:.4f} seconds")
+        return pcd
+    
+    def generate_pcd_parallel(self, model_paths, transformations, idxs):
+        
+        pcds = Parallel(n_jobs=-1)(delayed(self.generate_pcd)(model_paths[idxs[i]], transformations[i]) for i in range(len(idxs)))
+        return pcds
 
     def generate_data_6d(self, model_paths, labels, n_samples=10000):
         """Generate point clouds and save in numpy format.
@@ -133,45 +167,64 @@ class FullPCDDataCreator:
             n_samples (int): number of samples to generate
         """
         # load models as triangle meshes
-        models = [o3d.io.read_triangle_mesh(path) for path in model_paths]
-        model_idxs = list(range(len(models)))
+        # models = [o3d.io.read_triangle_mesh(path) for path in model_paths]
+        model_idxs = list(range(len(model_paths)))
         # labels should be alligned with the models
-        if len(labels) != len(models):
+        if len(labels) != len(model_paths):
             raise ValueError("Labels should be the same length as models.")
-        label_dict = {i: labels[i] for i in range(len(models))}
+        label_dict = {i: labels[i] for i in range(len(model_paths))}
         # generate random transformations
         start = time.perf_counter()
         self.transformation_array, self.d6_rotations_array, self.position_array = self.generate_random_transformation_6d(
             n_samples)
+        self.class_array = np.random.choice(model_idxs, n_samples)
         end = time.perf_counter()
         print(f"Subfunction took {end - start:.4f} seconds")
         # transformation_list = []
         # quaternion_list = []
         # position_list = []
-        pcd_list = []
-        idx_list = []
-        for i in range(n_samples):
-            if (i+1) % 1000 == 0:
-                print(f"Generating sample {i+1}/{n_samples}")
+        # pcd_list = []
+        
+        i=0
+        step=1000
+        while i+step <= n_samples:
+            start = time.perf_counter()
+            step_idxs= self.class_array[i:i+step]
+            step_transformation = self.transformation_array[i:i+step]
+            current_pcds = np.asarray(self.generate_pcd_parallel(model_paths, step_transformation, step_idxs))
+            i+=step
+            end = time.perf_counter()
+            print(f"sample {i} took {end - start:.4f} seconds")
+            if self.pcd_array is None:
+                self.pcd_array = current_pcds
+            else:
+                self.pcd_array = np.concatenate([self.pcd_array, current_pcds], axis=0)
+        # self.pcd_array = np.array([])
+        # for i in range(n_samples):
+        #     if (i+1) % 1000 == 0:
+        #         if self.pcd_array is None:
+        #             self.pcd_array = np.asarray(pcd_list)
+        #         else:
+        #             self.pcd_array = np.concatenate(self.pcd_array, np.asarray(pcd_list))
+        #         pcd_list=[]
+        #         print(f"Generating sample {i+1}/{n_samples}")
             # transformation, quaternion, position = self.generate_random_transformation()
             # position_list.append(position)
             # quaternion_list.append(quaternion)
             # transformation_list.append(transformation)
-            # select a random model
-            idx = random.choice(model_idxs)
-            idx_list.append(idx)
-            model = models[idx]
-            # generate a point cloud from the model with the sampled transformation
-            pcd = self.generate_pcd(model, self.transformation_array[i])
-            # transform the point cloud to numpy array and append to the list
-            pcd_list.append(np.asarray(pcd.points))
+            # select a random mode
+            # model = models[self.class_array[i]]
+            # # generate a point cloud from the model with the sampled transformation
+            # pcd = self.generate_pcd(model, self.transformation_array[i])
+            # # transform the point cloud to numpy array and append to the list
+            # pcd_list.append(pcd)
 
-        self.pcd_array = np.array(pcd_list)
+        # self.pcd_array = np.array(pcd_list)
         # self.transformation_array = np.array(transformation_list)
         # self.quaternion_array = np.array(quaternion_list)
         # self.position_array = np.array(position_list)
-        self.class_array = np.array(idx_list)
-        np.savez(f"full_pcd_{n_samples}_samples.npz", pcds=self.pcd_array,
+        # self.class_array = np.array(idx_list)
+        np.savez(f"full_pcd_{n_samples}_samples_6d.npz", pcds=self.pcd_array,
                  transformations=self.transformation_array, rotations_6d=self.d6_rotations_array, positions=self.position_array, classes=self.class_array)
         with open("label_dict.json", "w") as f:
             json.dump(label_dict, f)

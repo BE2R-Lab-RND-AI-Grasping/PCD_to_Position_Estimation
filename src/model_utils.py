@@ -175,7 +175,7 @@ def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
     
 
 
-def sample_and_group_relative(npoint, nsample, xyz, points, returnfps=False):
+def sample_and_group_relative(npoint, nsample, xyz, points, returnfps=False, coord3=True):
     """
     Perform sampling, grouping, and normalization.
 
@@ -210,9 +210,15 @@ def sample_and_group_relative(npoint, nsample, xyz, points, returnfps=False):
         grouped_points = index_points(
             points, group_idx)   # (B, npoint, nsample, C)
         # (B, npoint, nsample, C+3)
-        new_points = torch.cat([grouped_xyz_norm, grouped_points], dim=-1)
+        if coord3:
+            new_points = torch.cat([grouped_xyz_norm, grouped_points], dim=-1)
+        else:
+            new_points = torch.cat([grouped_xyz, grouped_xyz_norm, grouped_points], dim=-1)
     else:
-        new_points = grouped_xyz_norm
+        if coord3:
+            new_points = grouped_xyz_norm
+        else:
+            new_points = torch.cat([grouped_xyz, grouped_xyz_norm], dim=-1)
 
     if returnfps:
         return new_xyz, new_points, fps_idx

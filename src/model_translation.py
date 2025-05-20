@@ -8,7 +8,7 @@ from src.model_utils import sample_and_group,sample_and_group_relative
 class PointNetSetAbstraction(nn.Module):
     """Main module of the PointNet++ that groups points and extract features for each group"""
 
-    def __init__(self, npoint, nsample, in_channels, mlp_channels, group_all):
+    def __init__(self, npoint, nsample, in_channels, mlp_channels, group_all, coord3=True):
         """Network initialization and parameter setting.
 
         Args:
@@ -23,8 +23,12 @@ class PointNetSetAbstraction(nn.Module):
         self.npoint = npoint
         self.nsample = nsample
         self.group_all = group_all
+        self.coord3 = coord3
         dropout_p = 0.3
-        last_channel = in_channels + 3  # +3 for relative xyz
+        if self.coord3:
+            last_channel = in_channels + 3  # +3 for relative xyz
+        else:
+            last_channel = in_channels + 6
         self.mlp = nn.ModuleList()
         for i, out_channel in enumerate(mlp_channels):
             self.mlp.append(nn.Conv2d(last_channel, out_channel, 1))
@@ -52,21 +56,32 @@ class PointNetSetAbstraction(nn.Module):
             # just zeroes it is not supposed to be used
             new_xyz = torch.zeros(xyz.shape[0], 1, 3).to(xyz.device)
             grouped_xyz = xyz.view(xyz.shape[0], 1, xyz.shape[1], 3)
-            # mean_xyz = torch.mean(grouped_xyz, dim=-2,keepdim=True)  # (B, 1, N, 3)
-            # grouped_xyz_norm = grouped_xyz - mean_xyz  # center at mean value
-            grouped_xyz_norm = grouped_xyz # no normalization to keep spacial information
+            mean_xyz = torch.mean(grouped_xyz, dim=-2,keepdim=True)  # (B, 1, N, 3)
+            grouped_xyz_norm = grouped_xyz - mean_xyz  # center at mean value
+            # grouped_xyz_norm = grouped_xyz # no normalization to keep spacial information
             if points is not None:
                 grouped_points = points.view(
                     points.shape[0], 1, points.shape[1], -1)
-                new_points = torch.cat(
-                    [grouped_xyz_norm, grouped_points], dim=-1)
+                
+                if self.coord3:
+                    new_points = torch.cat(
+                        [grouped_xyz, grouped_points], dim=-1)
+                else:
+                    new_points = torch.cat(
+                        [grouped_xyz, grouped_xyz_norm, grouped_points], dim=-1)
+                # new_points = torch.cat(
+                #     [grouped_xyz_norm, grouped_points], dim=-1)
             else:
-                new_points = grouped_xyz_norm
+                if self.coord3:
+                    new_points = grouped_xyz
+                else:
+                    new_points = torch.cat([grouped_xyz, grouped_xyz_norm], dim=-1)
+                # 
         else:
             # new_xyz are only sampled points (B, npoint, 3)
             # new points are grouped into (B, npoint, nsample, C+6) and have all the points and their coordinates
             new_xyz, new_points = sample_and_group_relative(
-                self.npoint, self.nsample, xyz, points)
+                self.npoint, self.nsample, xyz, points, coord3=self.coord3)
 
         # Transpose to (B, C, npoint, nsample) for Conv2d
         # only new_points are to be pocessed by the MLP
@@ -148,12 +163,12 @@ class TranslationModel(nn.Module):
             nn.Linear(512, 128),          # Input feature size = 512
             nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Dropout(p=0.3),
+            nn.Dropout(p=0.2),
 
             nn.Linear(128, 64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
-            nn.Dropout(p=0.3),
+            nn.Dropout(p=0.2),
 
             nn.Linear(64, 3)            # 10 output classes
         )

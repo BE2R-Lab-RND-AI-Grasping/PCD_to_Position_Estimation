@@ -45,6 +45,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler=None, devi
             optimizer.zero_grad()
             pred_translation = model(point_clouds)
             trans_loss = F.mse_loss(pred_translation, gt_translation)
+            # trans_loss = F.l1_loss(pred_translation, gt_translation)
             trans_loss.backward()
             optimizer.step()
             total_loss += trans_loss.item() * batch_size
