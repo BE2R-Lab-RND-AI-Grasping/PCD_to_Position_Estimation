@@ -20,7 +20,7 @@ def validate_model(model, val_loader, device):
             point_clouds = batch[0].to(device) # (B, N, 3)
             gt_translation = batch[1][2].to(device) # (B, 3)
             pred_translation = model(point_clouds)
-            trans_loss = F.mse_loss(pred_translation, gt_translation)
+            trans_loss = F.l1_loss(pred_translation, gt_translation)
             total_loss += trans_loss.item() * batch_size
 
     print(f"Validation - Loss: {total_loss/n_samples:.4f} | ")
@@ -44,7 +44,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler=None, devi
             gt_translation = batch[1][2].to(device) # (B, 3)
             optimizer.zero_grad()
             pred_translation = model(point_clouds)
-            trans_loss = F.mse_loss(pred_translation, gt_translation)
+            trans_loss = F.l1_loss(pred_translation, gt_translation)
             # trans_loss = F.l1_loss(pred_translation, gt_translation)
             trans_loss.backward()
             optimizer.step()

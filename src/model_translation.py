@@ -32,8 +32,8 @@ class PointNetSetAbstraction(nn.Module):
         self.mlp = nn.ModuleList()
         for i, out_channel in enumerate(mlp_channels):
             self.mlp.append(nn.Conv2d(last_channel, out_channel, 1))
-            if not self.group_all:
-                self.mlp.append(nn.BatchNorm2d(out_channel))
+            # if not self.group_all:
+            self.mlp.append(nn.BatchNorm2d(out_channel))
             self.mlp.append(nn.ReLU(inplace=True))
             # self.mlp.append(nn.Dropout2d(p=dropout_p))
             last_channel = out_channel
@@ -102,7 +102,7 @@ class PointNetPPBackbone(nn.Module):
     """PontNet++ module for point cloud feature extraction.
     """
 
-    def __init__(self):
+    def __init__(self, coord3=True):
         """Initialize several consecutive PointNetSetAbstraction layers for hierarchical feature extraction.
 
         The last layer should have group_all=True to return the global features of the remaining point cloud.
@@ -112,21 +112,21 @@ class PointNetPPBackbone(nn.Module):
             npoint=256,  nsample=32,
             in_channels=0,
             mlp_channels=[32, 32, 64],
-            group_all=False
+            group_all=False,coord3=coord3
         )
 
         self.sa2 = PointNetSetAbstraction(
             npoint=64,  nsample=16,
             in_channels=64, 
             mlp_channels=[64, 64, 128],
-            group_all=False
+            group_all=False,coord3=coord3
         )
 
         self.sa3 = PointNetSetAbstraction(
             npoint=None,  nsample=None,
             in_channels=128,
             mlp_channels=[128, 256, 512],
-            group_all=True
+            group_all=True,coord3=coord3
         )
 
     def forward(self, xyz, features=None):
@@ -150,25 +150,25 @@ class PointNetPPBackbone(nn.Module):
 
 class TranslationModel(nn.Module):
     """Model for point cloud classification and position prediction."""
-    def __init__(self):
+    def __init__(self,coord3=True):
         """Initialize PointNet++ backbone and classification head. 
 
         Args:
             num_classes (int): number of possible classes
         """
         super().__init__()
-        self.backbone = PointNetPPBackbone()
+        self.backbone = PointNetPPBackbone(coord3=coord3)
 
         self.translation_head = nn.Sequential(
             nn.Linear(512, 128),          # Input feature size = 512
             nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Dropout(p=0.2),
+            # nn.Dropout(p=0.2),
 
             nn.Linear(128, 64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
-            nn.Dropout(p=0.2),
+            # nn.Dropout(p=0.2),
 
             nn.Linear(64, 3)            # 10 output classes
         )
