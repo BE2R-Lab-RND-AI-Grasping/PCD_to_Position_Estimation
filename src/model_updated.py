@@ -73,24 +73,35 @@ class SetAbstactionBlock(nn.Module):
 
 
 class PointNet2Backbone(nn.Module):
-    def __init__(self, input_dim=0, mlps=[[16, 16, 16], [16, 32, 32]], downsample_points=[256, 64], radii=[0.05, 0.15], ks=[16, 32]):
+    def __init__(self, input_dim=0, sa_mlps=[[16, 16, 16], [16, 32, 32]], mlp=[64, 128, 128],downsample_points=[256, 64], radii=[0.1, 0.15], ks=[16, 32], add_xyz=False):
         super().__init__()
         self.downsample_points = downsample_points
-
+        self.add_xyz = add_xyz
         self.sa1 = SetAbstactionBlock(
-            input_dim=input_dim, mlp_dim=mlps[0], radius=radii[0], k=ks[0])
+            input_dim=input_dim, mlp_dim=sa_mlps[0], radius=radii[0], k=ks[0],use_xyz=add_xyz)
         self.sa2 = SetAbstactionBlock(
-            input_dim=mlps[0][2], mlp_dim=mlps[1], radius=radii[1], k=ks[1])
+            input_dim=sa_mlps[0][2], mlp_dim=sa_mlps[1], radius=radii[1], k=ks[1],use_xyz=add_xyz)
         scale = 2
-        self.global_sa = nn.Sequential(
-            nn.Conv1d(32, 64, 1, bias=False),
-            nn.BatchNorm1d(64),
-            nn.GELU(),
-            nn.Conv1d(64, 128, 1, bias=False),
-            nn.BatchNorm1d(128),
-            nn.GELU(),
-            nn.Conv1d(128, 128, 1, bias=False),
-        )
+        if add_xyz:
+            self.global_sa = nn.Sequential(
+                nn.Conv1d(sa_mlps[1][2]+3, mlp[0], 1, bias=False),
+                nn.BatchNorm1d(mlp[0]),
+                nn.GELU(),
+                nn.Conv1d(mlp[0], mlp[1], 1, bias=False),
+                nn.BatchNorm1d(mlp[1]),
+                nn.GELU(),
+                nn.Conv1d(mlp[1], mlp[2], 1, bias=False),
+            )
+        else:
+            self.global_sa = nn.Sequential(
+                nn.Conv1d(sa_mlps[1][2], mlp[0], 1, bias=False),
+                nn.BatchNorm1d(mlp[0]),
+                nn.GELU(),
+                nn.Conv1d(mlp[0], mlp[1], 1, bias=False),
+                nn.BatchNorm1d(mlp[1]),
+                nn.GELU(),
+                nn.Conv1d(mlp[1], mlp[2], 1, bias=False),
+            )
 
     def forward(self, x, xyz):
 
@@ -99,10 +110,11 @@ class PointNet2Backbone(nn.Module):
 
         xyz_2 = downsample_fps(xyz_1, self.downsample_points[1])
         x2 = self.sa2(x1, xyz_1, xyz_2)  # (B, 128, 256)
-
-        # x2_with_xyz = torch.cat([x2, xyz_2], dim=-1) # (B,  128, 256+3)
-
-        x3 = self.global_sa(x2.permute(0, 2, 1))  # (B, 1024, 1)
+        if self.add_xyz:
+            x2_with_xyz = torch.cat([x2, xyz_2], dim=-1) # (B,  128, 256+3)
+            x3 = self.global_sa(x2_with_xyz.permute(0, 2, 1))  # (B, 1024, 1)
+        else:
+            x3 = self.global_sa(x2.permute(0, 2, 1))  # (B, 1024, 1)
         out = x3.max(-1)[0]
         return out
 
@@ -110,7 +122,7 @@ class PointNet2Backbone(nn.Module):
 class PointNet2Classification(nn.Module):
     """Model for point cloud classification and position prediction."""
 
-    def __init__(self, num_classes, backbone_params=None, head_norm=True, dropout=0.3):
+    def __init__(self, num_classes, mlp=[64,32], backbone_params=None, head_norm=True, dropout=0.3):
         """Initialize PointNet++ backbone and classification head. 
 
         Args:
@@ -118,24 +130,25 @@ class PointNet2Classification(nn.Module):
         """
         super().__init__()
         if backbone_params is None:
-
             self.backbone = PointNet2Backbone()
+            last_backbone_layer = 128
         else:
             self.backbone = PointNet2Backbone(**backbone_params)
+            last_backbone_layer = backbone_params['mlp'][-1]
         scale = 2
         norm = nn.BatchNorm1d if head_norm else nn.Identity
-        self.norm = norm(128)
+        self.norm = norm(last_backbone_layer)
         self.classification_head = nn.Sequential(
-            nn.Linear(128, 64),
-            norm(64),          # Input feature size = 512
+            nn.Linear(last_backbone_layer, mlp[0]),
+            norm(mlp[0]),          # Input feature size = 512
             nn.GELU(),
             nn.Dropout(p=dropout),
 
-            nn.Linear(64, 32),
-            norm(32),
+            nn.Linear(mlp[0], mlp[1]),
+            norm(mlp[1]),
             nn.GELU(),
             nn.Dropout(p=dropout),
-            nn.Linear(32, num_classes)            # 10 output classes
+            nn.Linear(mlp[1], num_classes)            # 10 output classes
         )
 
     def forward(self, x, xyz):
@@ -144,3 +157,43 @@ class PointNet2Classification(nn.Module):
         class_logits = self.classification_head(head_input)  # (B, num_classes)
 
         return class_logits
+
+
+class PointNet2Translation(nn.Module):
+    """Model for point cloud classification and position prediction."""
+
+    def __init__(self,  mlp=[64,32], backbone_params=None, head_norm=True, dropout=0.3):
+        """Initialize PointNet++ backbone and classification head. 
+
+        Args:
+            num_classes (int): number of possible classes
+        """
+        super().__init__()
+        if backbone_params is None:
+            last_backbone_layer = 128
+            self.backbone = PointNet2Backbone(add_xyz=True)
+        else:
+            last_backbone_layer = backbone_params['mlp'][-1]
+            self.backbone = PointNet2Backbone(**backbone_params)
+        scale = 2
+        norm = nn.BatchNorm1d if head_norm else nn.Identity
+        self.norm = norm(last_backbone_layer)
+        self.classification_head = nn.Sequential(
+            nn.Linear(last_backbone_layer, mlp[0]),
+            norm(mlp[0]),          # Input feature size = 512
+            nn.GELU(),
+            nn.Dropout(p=dropout),
+
+            nn.Linear(mlp[0], mlp[1]),
+            norm(mlp[1]),
+            nn.GELU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(mlp[1], 3)            # 10 output classes
+        )
+
+    def forward(self, x, xyz):
+        pcd_features = self.backbone(x, xyz)  # (B, 1024)
+        head_input = F.gelu(self.norm(pcd_features))
+        translation = self.classification_head(head_input)  # (B, num_classes)
+
+        return translation

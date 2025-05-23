@@ -13,19 +13,19 @@ def save_checkpoint(state, filename="new_run/checkpoint.pth"):
 def validate_model(model, val_loader, device):
     model.eval()
     total_loss = 0.0
-    n_samples = len(val_loader.dataset)
+    n_samples_val = len(val_loader.dataset)
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="Validating"):
             batch_size = batch[0].shape[0]
             point_clouds = batch[0].to(device) # (B, N, 3)
             gt_translation = batch[1][2].to(device) # (B, 3)
-            pred_translation = model(point_clouds)
+            pred_translation = model(None, point_clouds)
             trans_loss = F.l1_loss(pred_translation, gt_translation)
             total_loss += trans_loss.item() * batch_size
 
-    print(f"Validation - Loss: {total_loss/n_samples:.4f} | ")
+    print(f"Validation - Loss: {total_loss/n_samples_val:.4f} | ")
 
-    return total_loss/n_samples
+    return total_loss/n_samples_val
 
 
 def train_model(model, train_loader, val_loader, optimizer, scheduler=None, device=torch.device("cpu"), epochs=100, directory="new_run"):
@@ -43,7 +43,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler=None, devi
             point_clouds = batch[0].to(device) # (B, N, 3)
             gt_translation = batch[1][2].to(device) # (B, 3)
             optimizer.zero_grad()
-            pred_translation = model(point_clouds)
+            pred_translation = model(None, point_clouds)
             trans_loss = F.l1_loss(pred_translation, gt_translation)
             # trans_loss = F.l1_loss(pred_translation, gt_translation)
             trans_loss.backward()
