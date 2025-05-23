@@ -5,15 +5,17 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import datetime
 from tqdm import tqdm
+from pathlib import Path
 
 
 def save_checkpoint(state, filename="new_run/checkpoint.pth"):
     torch.save(state, filename)
 
+
 def validate_model(model, val_loader, device):
     model.eval()
 
-    total_loss = 0.0    
+    total_loss = 0.0
     correct = 0
     total = 0
     n_samples = len(val_loader.dataset)
@@ -23,7 +25,7 @@ def validate_model(model, val_loader, device):
             point_clouds = batch[0].to(device)            # (B, N, 3)
             class_labels = batch[1][0].to(device)       # (B,)
 
-            class_logits = model(point_clouds)
+            class_logits = model(None, point_clouds)
             cls_loss = F.cross_entropy(class_logits, class_labels)
             total_loss += cls_loss.item() * batch_size
 
@@ -38,7 +40,7 @@ def validate_model(model, val_loader, device):
 
     return total_loss/n_samples, accuracy
 
-from pathlib import Path
+
 def train_model(model, train_loader, val_loader, optimizer, scheduler=None, device=torch.device("cpu"), epochs=100, directory="new_run"):
     if not Path(directory).exists():
         Path(directory).mkdir(parents=True, exist_ok=True)
@@ -49,6 +51,8 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler=None, devi
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
+        correct = 0
+        total = 0
         n_samples = len(train_loader.dataset)
         for batch in tqdm(train_loader, desc="Training"):
             batch_size = batch[0].shape[0]
@@ -57,16 +61,25 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler=None, devi
             class_labels = batch[1][0].to(device)       # (B,)
 
             optimizer.zero_grad()
-            class_logits= model(point_clouds)
+            class_logits = model(None, point_clouds)
             cls_loss = F.cross_entropy(class_logits, class_labels)
             cls_loss.backward()
             optimizer.step()
             total_loss += cls_loss.item() * batch_size
 
-        print(f"Epoch {epoch+1}/{epochs} - "
-              f"Total Loss: {total_loss/n_samples:.4f}")
+            preds = class_logits.argmax(dim=1)
+            correct += (preds == class_labels).sum().item()
+            total += class_labels.size(0)
+        accuracy = correct / total * 100
         
+
+        print(f"Epoch {epoch+1}/{epochs} - "
+              f"Total Loss: {total_loss/n_samples:.4f} | "
+              f"Accuracy: {accuracy:.2f}%")
+
+
         writer.add_scalar("Loss/Train_Total", total_loss/n_samples, epoch)
+        writer.add_scalar("Accuracy/Train", accuracy, epoch)
 
         # val_loss = validate_model(model, val_loader, device)
         val_loss, val_accuracy = validate_model(

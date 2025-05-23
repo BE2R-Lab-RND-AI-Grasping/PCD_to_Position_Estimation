@@ -156,6 +156,7 @@ def save_checkpoint(state, filename="new_run/checkpoint.pth"):
     torch.save(state, filename)
 
 
+
 def train_model(model, train_loader, val_loader, optimizer, scheduler=None, device=torch.device("cpu"), epochs=100, alpha=1.0, beta=1.0):
     writer = SummaryWriter()
     best_val_loss = float('inf')
