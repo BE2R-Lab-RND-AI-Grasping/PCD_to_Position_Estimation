@@ -84,7 +84,8 @@ class PointNet2Backbone(nn.Module):
         scale = 2
         if add_xyz:
             self.global_sa = nn.Sequential(
-                nn.Conv1d(sa_mlps[1][2]+3, mlp[0], 1, bias=False),
+                # nn.Conv1d(sa_mlps[1][2]+3, mlp[0], 1, bias=False),
+                nn.Conv1d(3, mlp[0], 1, bias=False),
                 nn.BatchNorm1d(mlp[0]),
                 nn.GELU(),
                 nn.Conv1d(mlp[0], mlp[1], 1, bias=False),
@@ -111,7 +112,8 @@ class PointNet2Backbone(nn.Module):
         xyz_2 = downsample_fps(xyz_1, self.downsample_points[1])
         x2 = self.sa2(x1, xyz_1, xyz_2)  # (B, 128, 256)
         if self.add_xyz:
-            x2_with_xyz = torch.cat([x2, xyz_2], dim=-1) # (B,  128, 256+3)
+            # x2_with_xyz = torch.cat([x2, xyz_2], dim=-1) # (B,  128, 256+3)
+            x2_with_xyz = xyz_2 # (B,  128, 256+3)
             x3 = self.global_sa(x2_with_xyz.permute(0, 2, 1))  # (B, 1024, 1)
         else:
             x3 = self.global_sa(x2.permute(0, 2, 1))  # (B, 1024, 1)
@@ -189,6 +191,47 @@ class PointNet2Translation(nn.Module):
             nn.GELU(),
             nn.Dropout(p=dropout),
             nn.Linear(mlp[1], 3)            # 10 output classes
+        )
+
+    def forward(self, x, xyz):
+        pcd_features = self.backbone(x, xyz)  # (B, 1024)
+        head_input = F.gelu(self.norm(pcd_features))
+        translation = self.classification_head(head_input)  # (B, num_classes)
+
+        return translation
+    
+
+
+class PointNet2Rotation(nn.Module):
+    """Model for point cloud classification and position prediction."""
+
+    def __init__(self,  mlp=[64,32], backbone_params=None, head_norm=True, dropout=0.3):
+        """Initialize PointNet++ backbone and classification head. 
+
+        Args:
+            num_classes (int): number of possible classes
+        """
+        super().__init__()
+        if backbone_params is None:
+            last_backbone_layer = 128
+            self.backbone = PointNet2Backbone(add_xyz=True)
+        else:
+            last_backbone_layer = backbone_params['mlp'][-1]
+            self.backbone = PointNet2Backbone(**backbone_params)
+        scale = 2
+        norm = nn.BatchNorm1d if head_norm else nn.Identity
+        self.norm = norm(last_backbone_layer)
+        self.classification_head = nn.Sequential(
+            nn.Linear(last_backbone_layer, mlp[0]),
+            norm(mlp[0]),          # Input feature size = 512
+            nn.GELU(),
+            nn.Dropout(p=dropout),
+
+            nn.Linear(mlp[0], mlp[1]),
+            norm(mlp[1]),
+            nn.GELU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(mlp[1], 6)            # 10 output classes
         )
 
     def forward(self, x, xyz):
