@@ -73,8 +73,9 @@ class SetAbstactionBlock(nn.Module):
 
 
 class PointNet2Backbone(nn.Module):
-    def __init__(self, input_dim=0, sa_mlps=[[16, 16, 16], [16, 32, 32]], mlp=[64, 128, 128],downsample_points=[256, 64], radii=[0.1, 0.15], ks=[16, 32], add_xyz=False):
+    def __init__(self, input_dim=0, sa_mlps=[[16, 16, 16], [16, 32, 32]], mlp=[64, 128, 128],downsample_points=[256, 64], radii=[0.1, 0.15], ks=[16, 32], add_xyz=False, emb_mode=False):
         super().__init__()
+        self.emb_mode = emb_mode
         self.downsample_points = downsample_points
         self.add_xyz = add_xyz
         self.sa1 = SetAbstactionBlock(
@@ -111,6 +112,7 @@ class PointNet2Backbone(nn.Module):
 
         xyz_2 = downsample_fps(xyz_1, self.downsample_points[1])
         x2 = self.sa2(x1, xyz_1, xyz_2)  # (B, 128, 256)
+        if self.emb_mode: return x2
         if self.add_xyz:
             # x2_with_xyz = torch.cat([x2, xyz_2], dim=-1) # (B,  128, 256+3)
             x2_with_xyz = xyz_2 # (B,  128, 256+3)
@@ -124,18 +126,19 @@ class PointNet2Backbone(nn.Module):
 class PointNet2Classification(nn.Module):
     """Model for point cloud classification and position prediction."""
 
-    def __init__(self, num_classes, mlp=[64,32], backbone_params=None, head_norm=True, dropout=0.3):
+    def __init__(self, num_classes, mlp=[64,32], backbone_params=None, head_norm=True, dropout=0.3, emb_mode=False):
         """Initialize PointNet++ backbone and classification head. 
 
         Args:
             num_classes (int): number of possible classes
         """
         super().__init__()
+        self.emb_mode = emb_mode
         if backbone_params is None:
-            self.backbone = PointNet2Backbone()
+            self.backbone = PointNet2Backbone(emb_mode=emb_mode)
             last_backbone_layer = 128
         else:
-            self.backbone = PointNet2Backbone(**backbone_params)
+            self.backbone = PointNet2Backbone(**backbone_params, emb_mode=emb_mode)
             last_backbone_layer = backbone_params['mlp'][-1]
         scale = 2
         norm = nn.BatchNorm1d if head_norm else nn.Identity
@@ -154,7 +157,9 @@ class PointNet2Classification(nn.Module):
         )
 
     def forward(self, x, xyz):
+
         pcd_features = self.backbone(x, xyz)  # (B, 1024)
+        if self.emb_mode: return pcd_features
         head_input = F.gelu(self.norm(pcd_features))
         class_logits = self.classification_head(head_input)  # (B, num_classes)
 
