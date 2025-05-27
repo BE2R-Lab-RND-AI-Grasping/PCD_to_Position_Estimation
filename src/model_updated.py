@@ -73,15 +73,15 @@ class SetAbstactionBlock(nn.Module):
 
 
 class PointNet2Backbone(nn.Module):
-    def __init__(self, input_dim=0, sa_mlps=[[16, 16, 16], [16, 32, 32]], mlp=[64, 128, 128],downsample_points=[256, 64], radii=[0.1, 0.15], ks=[16, 32], add_xyz=False, emb_mode=False):
+    def __init__(self, input_dim=0, sa_mlps=[[16, 16, 16], [16, 32, 64]], mlp=[64, 128, 128],downsample_points=[256, 64], radii=[0.1, 0.15], ks=[16, 32], add_xyz=False, emb_mode=False):
         super().__init__()
         self.emb_mode = emb_mode
         self.downsample_points = downsample_points
         self.add_xyz = add_xyz
         self.sa1 = SetAbstactionBlock(
-            input_dim=input_dim, mlp_dim=sa_mlps[0], radius=radii[0], k=ks[0],use_xyz=add_xyz)
+            input_dim=input_dim, mlp_dim=sa_mlps[0], radius=radii[0], k=ks[0], use_xyz=add_xyz)
         self.sa2 = SetAbstactionBlock(
-            input_dim=sa_mlps[0][2], mlp_dim=sa_mlps[1], radius=radii[1], k=ks[1],use_xyz=add_xyz)
+            input_dim=sa_mlps[0][2], mlp_dim=sa_mlps[1], radius=radii[1], k=ks[1], use_xyz=add_xyz)
         scale = 2
         if add_xyz:
             self.global_sa = nn.Sequential(
@@ -112,7 +112,7 @@ class PointNet2Backbone(nn.Module):
 
         xyz_2 = downsample_fps(xyz_1, self.downsample_points[1])
         x2 = self.sa2(x1, xyz_1, xyz_2)  # (B, 128, 256)
-        if self.emb_mode: return x2
+        if self.emb_mode: return torch.cat([x2, xyz_2], dim=-1)
         if self.add_xyz:
             # x2_with_xyz = torch.cat([x2, xyz_2], dim=-1) # (B,  128, 256+3)
             x2_with_xyz = xyz_2 # (B,  128, 256+3)
