@@ -79,6 +79,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler=None, devi
 
 
         writer.add_scalar("Loss/Train_Total", total_loss/n_samples, epoch)
+        
         writer.add_scalar("Accuracy/Train", accuracy, epoch)
 
         # val_loss = validate_model(model, val_loader, device)
@@ -87,6 +88,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler=None, devi
 
         writer.add_scalar("Loss/Val_Total", val_loss, epoch)
         writer.add_scalar("Accuracy/Val", val_accuracy, epoch)
+        writer.add_scalars('Loss', {'train': total_loss/n_samples, 'val': val_loss}, epoch)
         # Optional: save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss

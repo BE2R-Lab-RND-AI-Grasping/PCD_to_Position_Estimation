@@ -69,6 +69,7 @@ class SetAbstactionBlock(nn.Module):
         x = self.conv(x)
         x = x.max(-1)[0]
         x = F.gelu(self.last_norm(x))
+        # x = F.gelu(x)
         return x.permute(0, 2, 1)  # (B, m, C)
 
 
@@ -140,7 +141,6 @@ class PointNet2Classification(nn.Module):
         else:
             self.backbone = PointNet2Backbone(**backbone_params, emb_mode=emb_mode)
             last_backbone_layer = backbone_params['mlp'][-1]
-        scale = 2
         norm = nn.BatchNorm1d if head_norm else nn.Identity
         self.norm = norm(last_backbone_layer)
         self.classification_head = nn.Sequential(
